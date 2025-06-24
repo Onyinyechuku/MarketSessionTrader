@@ -35,31 +35,33 @@ sessions = {
         ]
     },
     "London": {  # UTC+0/+1
-        "start": datetime.time(7, 0),   # 07:00 UTC (08:00 London)
+        "start": datetime.time(7, 0),   # 07:00 UTC (08:00 London) 9 Italian time
         "end": datetime.time(16, 0),    # 16:00 UTC (17:00 London)
         "buy_pairs": [
-            #"GBPUSD",  # Major GBP pair with high London liquidity
-            "EURUSD",  # Highest liquidity during London
+            # "EURUSD",  # Highest liquidity during London
+            # "CHFJPY",
+            "EURCHF",
             "EURGBP",
-            "CHFJPY",
-            #"EURCHF",
             "EURJPY",
-            #"GBPCHF",
-            "GBPJPY",
-            #"USDCHF",
-            #"XAUUSD",
+            # "GBPJPY",
+            # "GBPUSD",  # Major GBP pair with high London liquidity //// stay away from trading the pairs today 17/06/2025 because oof no clear direction
+            "GBPCHF",
+
+            "USDCHF",
+            # "XAUUSD",
         ],
         "sell_pairs": [
-            "GBPUSD",  # Major GBP pair with high London liquidity
-            #"EURUSD",  # Highest liquidity during London
-            #"EURGBP",
-            #"CHFJPY",
-            "EURCHF",  # Sensitive to European news
-            #"EURJPY",
+            "EURUSD",  # Highest liquidity during London
+            "CHFJPY",
+            # "EURCHF",  # Sensitive to European news
             "GBPCHF",  #Good for range trading in London
-            #"GBPJPY",
-            "USDCHF",
-            "XAUUSD",#Often moves counter to EURUSD
+            "EURGBP",
+            # "EURJPY",
+            # "GBPJPY",
+            "GBPUSD",  # Major GBP pair with high London liquidity
+            # "GBPCHF",
+            "XAUUSD",
+            # "USDCHF",  #Often moves counter to EURUSD
         ]
     },
     "New York": {  # UTC-4
@@ -100,7 +102,7 @@ class MarketSessionTrader:
         self.order_expiry_minutes = 30  # Orders expire after 30 minutes
         self.initialized = False
         
-    def initialize_mt5(self):  # sourcery skip: extract-method
+    def initialize_mt5(self):
         """Initialize MT5 connection"""
         try:
             if not mt5.initialize():
@@ -314,6 +316,95 @@ class MarketSessionTrader:
             logging.error(f"Error getting candle data for {symbol}: {str(e)}")
             return None
 
+    def calculate_daily_atr(self, symbol: str, period: int = 14) -> float:
+        """Calculate Daily ATR (Average True Range)"""
+        try:
+            if not self.verify_symbol(symbol):
+                return None
+
+            # Get daily rates for ATR calculation
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_D1, 0, period + 1)
+            if rates is None or len(rates) < period + 1:
+                logging.error(f"Failed to get daily rates for ATR calculation for {symbol}")
+                return None
+
+            # Convert rates to pandas DataFrame
+            df = pd.DataFrame(rates)
+            
+            # Calculate True Range
+            df['high_low'] = df['high'] - df['low']
+            df['high_close'] = abs(df['high'] - df['close'].shift(1))
+            df['low_close'] = abs(df['low'] - df['close'].shift(1))
+            
+            df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+            
+            # Calculate ATR
+            atr = df['tr'].rolling(window=period).mean().iloc[-1]
+            
+            return atr
+            
+        except Exception as e:
+            logging.error(f"Error calculating ATR for {symbol}: {str(e)}")
+            return None
+
+    def get_atr_based_stop_loss(self, symbol: str, entry_price: float, order_type: str, atr_multiplier: float = 1.0) -> float:
+        """Calculate stop loss based on ATR"""
+        try:
+            symbol_info = self.get_symbol_info(symbol)
+            if not symbol_info:
+                return None
+                
+            # Get daily ATR
+            atr = self.calculate_daily_atr(symbol)
+            if not atr:
+                return None
+                
+            # Calculate stop loss distance using ATR
+            stop_distance = atr * atr_multiplier
+            
+            # Ensure minimum distance based on spread
+            min_distance = symbol_info['spread'] * self.min_spread_multiplier
+            stop_distance = max(stop_distance, min_distance)
+            
+            # Calculate stop loss price
+            if order_type == "buy":
+                stop_loss = round(entry_price - stop_distance, symbol_info['digits'])
+            else:  # sell
+                stop_loss = round(entry_price + stop_distance, symbol_info['digits'])
+                
+            return stop_loss
+            
+        except Exception as e:
+            logging.error(f"Error calculating ATR-based stop loss for {symbol}: {str(e)}")
+            return None
+
+    def get_atr_based_take_profit(self, symbol: str, entry_price: float, order_type: str, atr_multiplier: float = 1.0) -> float:
+        """Calculate take profit based on ATR"""
+        try:
+            symbol_info = self.get_symbol_info(symbol)
+            if not symbol_info:
+                return None
+                
+            # Get daily ATR
+            atr = self.calculate_daily_atr(symbol)
+            if not atr:
+                return None
+                
+            # Calculate take profit distance using ATR
+            tp_distance = atr * atr_multiplier
+            
+            # Calculate take profit price
+            if order_type == "buy":
+                take_profit = round(entry_price + tp_distance, symbol_info['digits'])
+            else:  # sell
+                take_profit = round(entry_price - tp_distance, symbol_info['digits'])
+                
+            return take_profit
+            
+        except Exception as e:
+            logging.error(f"Error calculating ATR-based take profit for {symbol}: {str(e)}")
+            return None
+
     def calculate_order_levels(self, symbol: str, current_price: float, order_type: str, candle: Dict) -> Tuple[float, float]:
         """Calculate scalping order levels based on current price and candle range"""
         try:
@@ -412,12 +503,22 @@ class MarketSessionTrader:
             if not limit_price or not stop_price:
                 return
             
-            # Generate timestamp for order comments - using minutes since midnight
+            # Generate timestamp for order comments
             now = datetime.datetime.now()
             minutes_since_midnight = int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 60)
             
             orders = []
             if order_type == "buy":
+                # Calculate ATR-based stop losses and take profits
+                limit_sl = self.get_atr_based_stop_loss(symbol, limit_price, "buy", atr_multiplier=0.30)
+                stop_sl = self.get_atr_based_stop_loss(symbol, stop_price, "buy", atr_multiplier=0.30)
+                limit_tp = self.get_atr_based_take_profit(symbol, limit_price, "buy", atr_multiplier=0.30)
+                stop_tp = self.get_atr_based_take_profit(symbol, stop_price, "buy", atr_multiplier=0.30)
+                
+                if not all([limit_sl, stop_sl, limit_tp, stop_tp]):
+                    logging.error(f"Failed to calculate SL/TP levels for {symbol}")
+                    return
+                
                 # Buy Limit order
                 buy_limit = {
                     "action": mt5.TRADE_ACTION_PENDING,
@@ -425,8 +526,8 @@ class MarketSessionTrader:
                     "volume": self.volume,
                     "type": mt5.ORDER_TYPE_BUY_LIMIT,
                     "price": limit_price,
-                    "sl": self.calculate_trailing_stop(symbol, candle, "buy", limit_price),
-                    "tp": 0.0,  # No take profit, using trailing stop
+                    "sl": limit_sl,
+                    "tp": limit_tp,
                     "deviation": 10,
                     "magic": 123456,
                     "type_time": mt5.ORDER_TIME_GTC,
@@ -442,8 +543,8 @@ class MarketSessionTrader:
                     "volume": self.volume,
                     "type": mt5.ORDER_TYPE_BUY_STOP,
                     "price": stop_price,
-                    "sl": self.calculate_trailing_stop(symbol, candle, "buy", stop_price),
-                    "tp": 0.0,  # No take profit, using trailing stop
+                    "sl": stop_sl,
+                    "tp": stop_tp,
                     "deviation": 10,
                     "magic": 123456,
                     "type_time": mt5.ORDER_TIME_GTC,
@@ -452,6 +553,16 @@ class MarketSessionTrader:
                 }
                 orders.append(buy_stop)
             else:
+                # Calculate ATR-based stop losses and take profits
+                limit_sl = self.get_atr_based_stop_loss(symbol, limit_price, "sell", atr_multiplier=0.30)
+                stop_sl = self.get_atr_based_stop_loss(symbol, stop_price, "sell", atr_multiplier=0.30)
+                limit_tp = self.get_atr_based_take_profit(symbol, limit_price, "sell", atr_multiplier=0.30)
+                stop_tp = self.get_atr_based_take_profit(symbol, stop_price, "sell", atr_multiplier=0.30)
+                
+                if not all([limit_sl, stop_sl, limit_tp, stop_tp]):
+                    logging.error(f"Failed to calculate SL/TP levels for {symbol}")
+                    return
+                
                 # Sell Limit order
                 sell_limit = {
                     "action": mt5.TRADE_ACTION_PENDING,
@@ -459,8 +570,8 @@ class MarketSessionTrader:
                     "volume": self.volume,
                     "type": mt5.ORDER_TYPE_SELL_LIMIT,
                     "price": limit_price,
-                    "sl": self.calculate_trailing_stop(symbol, candle, "sell", limit_price),
-                    "tp": 0.0,  # No take profit, using trailing stop
+                    "sl": limit_sl,
+                    "tp": limit_tp,
                     "deviation": 10,
                     "magic": 123456,
                     "type_time": mt5.ORDER_TIME_GTC,
@@ -476,8 +587,8 @@ class MarketSessionTrader:
                     "volume": self.volume,
                     "type": mt5.ORDER_TYPE_SELL_STOP,
                     "price": stop_price,
-                    "sl": self.calculate_trailing_stop(symbol, candle, "sell", stop_price),
-                    "tp": 0.0,  # No take profit, using trailing stop
+                    "sl": stop_sl,
+                    "tp": stop_tp,
                     "deviation": 10,
                     "magic": 123456,
                     "type_time": mt5.ORDER_TIME_GTC,
