@@ -38,26 +38,28 @@ sessions = {
         "start": datetime.time(7, 0),   # 07:00 UTC (08:00 London)
         "end": datetime.time(16, 0),    # 16:00 UTC (17:00 London)
         "buy_pairs": [
-            "GBPUSD",  # Major GBP pair with high London liquidity
+            #"GBPUSD",  # Major GBP pair with high London liquidity
             "EURUSD",  # Highest liquidity during London
             "EURGBP",
             "CHFJPY",
-            "EURCHF",
+            #"EURCHF",
             "EURJPY",
-            # "GBPCHF",
+            #"GBPCHF",
             "GBPJPY",
-            # "USDCHF",
+            #"USDCHF",
+            #"XAUUSD",
         ],
         "sell_pairs": [
-            # "GBPUSD",  # Major GBP pair with high London liquidity
-            # "EURUSD",  # Highest liquidity during London
-            "EURGBP",
-            # "CHFJPY",
+            "GBPUSD",  # Major GBP pair with high London liquidity
+            #"EURUSD",  # Highest liquidity during London
+            #"EURGBP",
+            #"CHFJPY",
             "EURCHF",  # Sensitive to European news
-            # "EURJPY",
+            #"EURJPY",
             "GBPCHF",  #Good for range trading in London
-            # "GBPJPY",
-            "USDCHF",  #Often moves counter to EURUSD
+            #"GBPJPY",
+            "USDCHF",
+            "XAUUSD",#Often moves counter to EURUSD
         ]
     },
     "New York": {  # UTC-4
@@ -98,7 +100,7 @@ class MarketSessionTrader:
         self.order_expiry_minutes = 30  # Orders expire after 30 minutes
         self.initialized = False
         
-    def initialize_mt5(self):
+    def initialize_mt5(self):  # sourcery skip: extract-method
         """Initialize MT5 connection"""
         try:
             if not mt5.initialize():
